@@ -1,8 +1,8 @@
 # R4900G3 Fan Controller / R4900G3 风扇控制器
 
-This project provides a Python script to dynamically control the fan speeds of an Inspur R4900G3 server (or other servers manageable via IPMI) based on CPU temperatures. It can be run directly or as a Docker container.
+This project provides a Python script to dynamically control the fan speeds of an H3C R4900G3 server based on CPU temperatures. It can be run directly or as a Docker container.
 
-本项目提供一个 Python 脚本，用于根据 CPU 温度动态控制浪潮 R4900G3 服务器（或其他可通过 IPMI 管理的服务器）的风扇转速。可以直接运行，也可以作为 Docker 容器运行。
+本项目提供一个 Python 脚本，用于根据 CPU 温度动态控制H3C R4900G3 服务器的风扇转速。可以直接运行，也可以作为 Docker 容器运行。
 
 ## Features / 特性
 
