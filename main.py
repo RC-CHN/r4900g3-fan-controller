@@ -13,6 +13,16 @@ IPMI_HOST = os.environ.get("IPMI_HOST", "192.168.44.129")
 IPMI_USER = os.environ.get("IPMI_USER", "admin")
 IPMI_PASS = os.environ.get("IPMI_PASS", "admin")
 
+# --- 风扇控制策略 ---
+# FAN_CONTROL_STRATEGY: "PER_CPU" (默认) 或 "MAX_CPU_TEMP"
+# PER_CPU: 每个CPU温度分别控制其指定的风扇组
+# MAX_CPU_TEMP: 使用两个CPU中较高的温度控制所有指定风扇 (CPU1_FAN_IDS + CPU2_FAN_IDS)
+FAN_CONTROL_STRATEGY = os.environ.get("FAN_CONTROL_STRATEGY", "PER_CPU").upper()
+VALID_FAN_CONTROL_STRATEGIES = ["PER_CPU", "MAX_CPU_TEMP"]
+if FAN_CONTROL_STRATEGY not in VALID_FAN_CONTROL_STRATEGIES:
+    logging.warning(f"无效的风扇控制策略 '{FAN_CONTROL_STRATEGY}'。将使用默认策略 'PER_CPU'。")
+    FAN_CONTROL_STRATEGY = "PER_CPU"
+
 # --- 风扇及控制逻辑配置 ---
 # 风扇分组配置
 raw_cpu1_fan_ids = os.environ.get("CPU1_FAN_IDS", "0,1,2")
@@ -57,7 +67,7 @@ MAX_TEMP_READ_FAILURES = int(os.environ.get("MAX_TEMP_READ_FAILURES", "5"))
 # 注意: JSON 中的键必须是 "temp" 和 "speed"。
 # 内部存储时，我们将其转换为元组列表: [(temp_threshold, speed_percentage), ...]
 # 更新默认风扇曲线策略：70度以下低转速，70度以上再大幅拉升
-DEFAULT_FAN_CURVE_STR = '[{"temp": 50, "speed": 20}, {"temp": 60, "speed": 25}, {"temp": 70, "speed": 30}, {"temp": 75, "speed": 50}, {"temp": 80, "speed": 70}, {"temp": 85, "speed": 90}]'
+DEFAULT_FAN_CURVE_STR = '[{"temp": 40, "speed": 5},{"temp": 50, "speed": 10}, {"temp": 60, "speed": 30}, {"temp": 70, "speed": 25}, {"temp": 75, "speed": 50}, {"temp": 80, "speed": 70}, {"temp": 85, "speed": 90}]'
 fan_curve_json_str = os.environ.get("FAN_CURVE_JSON", DEFAULT_FAN_CURVE_STR)
 try:
     fan_curve_data = json.loads(fan_curve_json_str)
@@ -131,6 +141,7 @@ def main():
     logging.info(f"IPMI Host: {IPMI_HOST}")
     logging.info(f"CPU1 控制的风扇 IDs: {CPU1_FAN_IDS}")
     logging.info(f"CPU2 控制的风扇 IDs: {CPU2_FAN_IDS}")
+    logging.info(f"风扇控制策略: {FAN_CONTROL_STRATEGY}")
     logging.info(f"故障安全时控制的风扇 IDs: {ALL_POSSIBLE_FAN_IDS}")
     logging.info(f"轮询间隔: {POLLING_INTERVAL_SECONDS} 秒")
     logging.info(f"风扇曲线 (temp°C, speed%): {FAN_CURVE}")
@@ -154,46 +165,73 @@ def main():
             else:
                 temp_read_failures = 0 # 成功读取至少一个温度，重置失败计数器
 
-                # 处理 CPU1 的风扇
-                if cpu1_temp is not None and CPU1_FAN_IDS:
-                    target_speed_cpu1 = get_target_fan_speed(cpu1_temp)
-                    if target_speed_cpu1 is not None:
-                        logging.info(f"CPU1 温度 {cpu1_temp}°C, 目标转速: {target_speed_cpu1}% (风扇: {CPU1_FAN_IDS})")
-                        for fan_id in CPU1_FAN_IDS:
-                            ret_code, _, std_err = set_fan_speed(IPMI_HOST, IPMI_USER, IPMI_PASS, fan_id, target_speed_cpu1)
-                            if ret_code != 0:
-                                logging.error(f"设置风扇 {fan_id} (CPU1组) 转速为 {target_speed_cpu1}% 失败。错误: {std_err}")
+                if FAN_CONTROL_STRATEGY == "MAX_CPU_TEMP":
+                    control_temp = None
+                    if cpu1_temp is not None and cpu2_temp is not None:
+                        control_temp = max(cpu1_temp, cpu2_temp)
+                        logging.info(f"MAX_CPU_TEMP策略: CPU1={cpu1_temp}°C, CPU2={cpu2_temp}°C. 使用控制温度: {control_temp}°C")
+                    elif cpu1_temp is not None:
+                        control_temp = cpu1_temp
+                        logging.info(f"MAX_CPU_TEMP策略: 仅CPU1温度有效 ({cpu1_temp}°C). 使用控制温度: {control_temp}°C")
+                    elif cpu2_temp is not None:
+                        control_temp = cpu2_temp
+                        logging.info(f"MAX_CPU_TEMP策略: 仅CPU2温度有效 ({cpu2_temp}°C). 使用控制温度: {control_temp}°C")
+                    else:
+                        # 此情况已在外部 if cpu1_temp is None and cpu2_temp is None: 处理
+                        pass 
+                    
+                    if control_temp is not None:
+                        target_speed_unified = get_target_fan_speed(control_temp)
+                        if target_speed_unified is not None:
+                            all_controlled_fans = list(set(CPU1_FAN_IDS + CPU2_FAN_IDS)) # 合并并去重
+                            if not all_controlled_fans:
+                                logging.warning("MAX_CPU_TEMP策略: CPU1_FAN_IDS 和 CPU2_FAN_IDS 都为空，没有风扇可控制。")
                             else:
-                                logging.info(f"成功设置风扇 {fan_id} (CPU1组) 转速为 {target_speed_cpu1}%")
-                        applied_any_speed = True
-                elif CPU1_FAN_IDS: # CPU1_Temp is None but fans are assigned
-                    logging.warning(f"CPU1 温度未获取到，但已分配风扇 {CPU1_FAN_IDS}。这些风扇将不会基于CPU1温度调整。")
+                                logging.info(f"MAX_CPU_TEMP策略: 控制温度 {control_temp}°C, 统一目标转速: {target_speed_unified}% (风扇: {all_controlled_fans})")
+                                for fan_id in all_controlled_fans:
+                                    ret_code, _, std_err = set_fan_speed(IPMI_HOST, IPMI_USER, IPMI_PASS, fan_id, target_speed_unified)
+                                    if ret_code != 0:
+                                        logging.error(f"设置风扇 {fan_id} (统一控制) 转速为 {target_speed_unified}% 失败。错误: {std_err}")
+                                    else:
+                                        logging.info(f"成功设置风扇 {fan_id} (统一控制) 转速为 {target_speed_unified}%")
+                                applied_any_speed = True
+                        else:
+                             logging.warning(f"MAX_CPU_TEMP策略: 控制温度 {control_temp}°C, 但未能计算出统一目标转速。")
+                
+                elif FAN_CONTROL_STRATEGY == "PER_CPU":
+                    # 处理 CPU1 的风扇 (原有逻辑)
+                    if cpu1_temp is not None and CPU1_FAN_IDS:
+                        target_speed_cpu1 = get_target_fan_speed(cpu1_temp)
+                        if target_speed_cpu1 is not None:
+                            logging.info(f"PER_CPU策略: CPU1 温度 {cpu1_temp}°C, 目标转速: {target_speed_cpu1}% (风扇: {CPU1_FAN_IDS})")
+                            for fan_id in CPU1_FAN_IDS:
+                                ret_code, _, std_err = set_fan_speed(IPMI_HOST, IPMI_USER, IPMI_PASS, fan_id, target_speed_cpu1)
+                                if ret_code != 0:
+                                    logging.error(f"设置风扇 {fan_id} (CPU1组) 转速为 {target_speed_cpu1}% 失败。错误: {std_err}")
+                                else:
+                                    logging.info(f"成功设置风扇 {fan_id} (CPU1组) 转速为 {target_speed_cpu1}%")
+                            applied_any_speed = True
+                    elif CPU1_FAN_IDS: # CPU1_Temp is None but fans are assigned
+                        logging.warning(f"PER_CPU策略: CPU1 温度未获取到，但已分配风扇 {CPU1_FAN_IDS}。这些风扇将不会基于CPU1温度调整。")
 
-
-                # 处理 CPU2 的风扇
-                if cpu2_temp is not None and CPU2_FAN_IDS:
-                    target_speed_cpu2 = get_target_fan_speed(cpu2_temp)
-                    if target_speed_cpu2 is not None:
-                        logging.info(f"CPU2 温度 {cpu2_temp}°C, 目标转速: {target_speed_cpu2}% (风扇: {CPU2_FAN_IDS})")
-                        for fan_id in CPU2_FAN_IDS:
-                            ret_code, _, std_err = set_fan_speed(IPMI_HOST, IPMI_USER, IPMI_PASS, fan_id, target_speed_cpu2)
-                            if ret_code != 0:
-                                logging.error(f"设置风扇 {fan_id} (CPU2组) 转速为 {target_speed_cpu2}% 失败。错误: {std_err}")
-                            else:
-                                logging.info(f"成功设置风扇 {fan_id} (CPU2组) 转速为 {target_speed_cpu2}%")
-                        applied_any_speed = True
-                elif CPU2_FAN_IDS: # CPU2_Temp is None but fans are assigned
-                    logging.warning(f"CPU2 温度未获取到，但已分配风扇 {CPU2_FAN_IDS}。这些风扇将不会基于CPU2温度调整。")
-
-                # 如果只有一个CPU温度有效，且另一个CPU的风扇组没有被其对应CPU控制（因为温度无效）
-                # 并且用户没有明确配置空风扇组，则考虑将有效温度应用到未被控制的风扇组
-                # 这是一个可选的复杂逻辑，暂时简化：如果一个CPU温度无效，其对应的风扇组转速不变。
-                # 或者，可以考虑如果只有一个温度有效，则用这个温度控制所有风扇（如果用户希望这样）
-                # 目前的设计是：每个CPU温度独立控制其分配的风扇组。
-
+                    # 处理 CPU2 的风扇 (原有逻辑)
+                    if cpu2_temp is not None and CPU2_FAN_IDS:
+                        target_speed_cpu2 = get_target_fan_speed(cpu2_temp)
+                        if target_speed_cpu2 is not None:
+                            logging.info(f"PER_CPU策略: CPU2 温度 {cpu2_temp}°C, 目标转速: {target_speed_cpu2}% (风扇: {CPU2_FAN_IDS})")
+                            for fan_id in CPU2_FAN_IDS:
+                                ret_code, _, std_err = set_fan_speed(IPMI_HOST, IPMI_USER, IPMI_PASS, fan_id, target_speed_cpu2)
+                                if ret_code != 0:
+                                    logging.error(f"设置风扇 {fan_id} (CPU2组) 转速为 {target_speed_cpu2}% 失败。错误: {std_err}")
+                                else:
+                                    logging.info(f"成功设置风扇 {fan_id} (CPU2组) 转速为 {target_speed_cpu2}%")
+                            applied_any_speed = True
+                    elif CPU2_FAN_IDS: # CPU2_Temp is None but fans are assigned
+                        logging.warning(f"PER_CPU策略: CPU2 温度未获取到，但已分配风扇 {CPU2_FAN_IDS}。这些风扇将不会基于CPU2温度调整。")
+                
+                # 通用检查：是否应用了任何速度
                 if not applied_any_speed and (cpu1_temp is not None or cpu2_temp is not None):
-                    logging.warning("获取到有效温度，但没有风扇被成功设置转速（可能风扇组为空或目标转速计算失败）。")
-
+                    logging.warning("获取到有效温度，但没有风扇被成功设置转速（可能风扇组为空、目标转速计算失败或控制策略未覆盖）。")
 
             if temp_read_failures >= MAX_TEMP_READ_FAILURES:
                 logging.critical(f"连续 {temp_read_failures} 次读取所有相关 CPU 温度失败！进入故障安全模式，为所有已知的风扇 ({ALL_POSSIBLE_FAN_IDS}) 设置转速为 {DEFAULT_FAIL_SAFE_FAN_SPEED}%")

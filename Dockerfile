@@ -41,6 +41,8 @@ ENV MAX_FAN_SPEED="100"
 ENV DEFAULT_FAIL_SAFE_FAN_SPEED="75"
 ENV POLLING_INTERVAL_SECONDS="15"
 ENV MAX_TEMP_READ_FAILURES="5"
+# 风扇控制策略: "PER_CPU" (每个CPU分别控制) 或 "MAX_CPU_TEMP" (使用较高CPU温度统一控制)
+ENV FAN_CONTROL_STRATEGY="PER_CPU"
 # FAN_CURVE_JSON 的默认值在 main.py 中定义，这里仅作示例
 # ENV FAN_CURVE_JSON='[{"temp": 40, "speed": 25}, {"temp": 50, "speed": 35}, {"temp": 60, "speed": 50}, {"temp": 70, "speed": 75}, {"temp": 75, "speed": 90}]'
 

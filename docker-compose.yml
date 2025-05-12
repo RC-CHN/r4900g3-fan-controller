@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  fan-controller:
+    image: rc0x01/r4900g3-fan-controller:latest
+    container_name: r4900g3-fan-controller
+    restart: unless-stopped
+    # network_mode: "host" # 取消注释以使用主机网络 (如果IPMI需要)
+    environment:
+      # --- IPMI Configuration (CHANGE THESE) ---
+      - IPMI_HOST=192.168.44.129
+      - IPMI_USER=admin
+      - IPMI_PASS=admin
+
+      # --- Fan Control Logic ---
+      - CPU1_FAN_IDS=0,1,2             # Fans controlled by CPU1 temp
+      - CPU2_FAN_IDS=3,4,5             # Fans controlled by CPU2 temp
+      - ALL_FAN_IDS_FAILSAFE=0,1,2,3,4,5 # Fans controlled in fail-safe mode
+
+      - MIN_FAN_SPEED=20
+      - MAX_FAN_SPEED=100
+      - DEFAULT_FAIL_SAFE_FAN_SPEED=75
+
+      - POLLING_INTERVAL_SECONDS=5
+      - MAX_TEMP_READ_FAILURES=5       # Max consecutive temp read failures before fail-safe
+
+      # Fan curve: Aims for quiet operation below 75°C
+      # Format: '[{"temp": <celsius>, "speed": <percentage>}, ...]'
+      - FAN_CURVE_JSON: |
+          [{"temp": 50, "speed": 20}, {"temp": 65, "speed": 22}, {"temp": 70, "speed": 25}, {"temp": 74, "speed": 28}, {"temp": 75, "speed": 40}, {"temp": 80, "speed": 60}, {"temp": 85, "speed": 80}]
+    # privileged: true # Uncomment if ipmitool requires privileged access (use with caution)
